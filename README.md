@@ -1,39 +1,67 @@
 # AWS Cloud Security Lab
 
-> Cloud security work in AWS: IAM least privilege, an EC2 honeynet, and Python automation that audits S3 for misconfigurations.
+> Hands-on AWS security: a least-privilege IAM analyst account, an internet-exposed EC2 honeynet with Bash log analysis that traced attackers to 23 countries, and a Python/boto3 scanner that caught a misconfigured S3 bucket.
 
-![Category](https://img.shields.io/badge/Category-Cloud%20Security-blue) ![Tools](https://img.shields.io/badge/Tools-AWS%20%7C%20Python%20%7C%20boto3-informational)
+![Category](https://img.shields.io/badge/Category-Cloud%20Security-blue) ![Tools](https://img.shields.io/badge/Tools-AWS%20%7C%20Python%20%7C%20Bash%20%7C%20boto3-informational)
 
 ## Overview
 | | |
 |---|---|
-| **Objective** | Secure an AWS environment and automate detection of risky configurations |
-| **Tools** | AWS IAM, EC2, S3, Python (boto3) |
-| **Skills shown** | Cloud IAM, least privilege, honeypot deployment, security automation |
-
-> ✏️ **Fill in:** replace the bracketed notes below with your exact steps and results.
+| **Objective** | Apply least privilege, observe real-world attacks, and automate detection of cloud misconfigurations |
+| **Tools** | AWS IAM, EC2 (Amazon Linux 2023), S3, AWS CLI, Python (boto3), Bash (`journalctl`, `grep`, `sort`, `curl`) |
+| **Skills shown** | Cloud IAM, least privilege, honeypot deployment, log analysis, threat geolocation, security automation |
+| **Region** | us-east-2 (Ohio) |
 
 ---
 
-## Part 1: IAM and Least Privilege
-- Created a dedicated admin user instead of using the root account; MFA enabled on root.
-- [Policies attached and the reasoning for each]
+## Part 1: IAM Least Privilege
+![IAM user](./screenshots/01-iam-least-privilege-user.png)
 
-## Part 2: EC2 Honeynet
-- Deployed an EC2 instance as a honeypot with SSH key authentication.
-- [Security group rules, how long it ran, number of login attempts, top source countries]
+- Did day-to-day work from a dedicated IAM admin user instead of the root account.
+- Created a **`test-analyst`** user for security reviews with:
+  - **Only the AWS-managed `SecurityAudit` policy** (read-only visibility into security configurations, with no ability to change anything)
+  - **Console access disabled**, which leaves no password to phish
+- **Why:** an auditor needs to *see* everything but *change* nothing. That is least privilege applied to a real job function.
+
+## Part 2: EC2 Honeynet and Attacker Analysis
+![EC2 honeynet](./screenshots/02-ec2-honeynet-instance.png)
+
+- Launched **`honeynet-vm`** (t3.micro, Amazon Linux 2023) with SSH exposed to the internet and key-only authentication, so brute-force attempts could not succeed.
+- Pulled every source IP out of the SSH logs and geolocated them with a Bash pipeline:
+
+```bash
+# Extract unique IPs from SSH logs
+sudo journalctl -u sshd | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | sort -u > /tmp/attacker_ips.txt
+
+# Geolocate each IP
+while read ip; do
+  curl -s "http://ip-api.com/line/$ip?fields=query,country,city" | tr '\n' ' '; echo
+done < /tmp/attacker_ips.txt
+```
+
+![Attacker geolocation](./screenshots/03-ssh-attacker-geolocation.png)
+
+**Findings** (my own login IP and the instance's private IP are excluded and redacted):
+| Metric | Result |
+|---|---|
+| Unique external source IPs | **49** |
+| Countries | **23** |
+| Top sources | Argentina (10), United States (8), Ukraine (7), South Africa (3) |
+
+Many of the U.S. addresses resolve to cloud and hosting regions (Ashburn, Boydton, Santa Clara), which is typical of scanners running on rented infrastructure.
 
 ## Part 3: S3 Misconfiguration Scanner (Python + boto3)
-- Script lists all buckets and flags public access, missing encryption, and disabled versioning.
-- Code: [`scanner.py`](./scanner.py)
+![S3 misconfigured bucket](./screenshots/04-s3-misconfigured-bucket.png)
 
-## Results
-[Key numbers and findings]
+- Deliberately created **`test-misconfig-bucket-fabian01`** with **Block Public Access turned off**, to give the scanner something to find.
+- Set up the AWS CLI and wrote `s3_scanner.py` to enumerate buckets and check their public-access settings.
+- **Result:** `Scanning 1 bucket(s)... Found 1 misconfiguration(s)`. The scanner correctly flagged the exposed bucket.
 
 ## Security Notes
-- **No credentials are stored in this repo.** Keys are loaded from the local AWS CLI profile or environment variables.
-- Account IDs, IP addresses, and ARNs are redacted from screenshots.
+- **No credentials are stored in this repo.** Keys come from the local AWS CLI profile, and `.gitignore` blocks `.pem`, key, and credential files.
+- Account IDs, ARNs, public DNS names, and personal IPs are redacted from all screenshots.
 
 ## Key Takeaways
-- Misconfiguration, not exotic exploits, is the top cause of cloud breaches.
-- Automating checks makes security repeatable.
+- An exposed SSH port gets scanned from around the world. Key-only authentication is not optional.
+- Misconfiguration, not exotic exploits, is the top cause of cloud breaches, and automated checks catch it.
+- Least privilege means mapping permissions to a job function, not handing out admin rights.
